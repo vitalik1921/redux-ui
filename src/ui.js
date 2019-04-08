@@ -1,13 +1,15 @@
 'use strict';
 
 import React, { Component } from 'react';
-import { any, array, func, node, object, string } from 'prop-types';
+import { func, object } from 'prop-types';
 import { bindActionCreators } from 'redux';
 import { connect } from 'react-redux';
 import invariant from 'invariant';
 import { updateUI, massUpdateUI, setDefaultUI, mountUI, unmountUI } from './action-reducer';
 
 import { getUIState } from './utils';
+
+const UIContext = React.createContext({});
 
 export default function ui(key, opts = {}) {
   if (typeof key === 'object') {
@@ -16,7 +18,7 @@ export default function ui(key, opts = {}) {
   }
 
   const connector = connect(
-    (state) => { return { ui: getUIState(state) }; },
+    (state) => { return { ui: getUIState(state), globalState: state }; },
     (dispatch) => bindActionCreators({
       updateUI,
       massUpdateUI,
@@ -55,9 +57,10 @@ export default function ui(key, opts = {}) {
        * All state will be blown away on navigation by default.
        */
       class UI extends Component {
+        static contextType = UIContext;
 
-        constructor(props, ctx, queue) {
-          super(props, ctx, queue);
+        constructor(props, ctx) {
+          super(props, ctx);
 
           // If the key is undefined generate a new random hex key for the
           // current component's UI scope.
@@ -87,41 +90,12 @@ export default function ui(key, opts = {}) {
           massUpdateUI: func.isRequired
         }
 
-        // Pass these down in the new context created for this component
-        static childContextTypes = {
-          // uiKey is the name of the parent context's key
-          uiKey: string,
-          // uiPath is the current path of the UI context
-          uiPath: array,
-          // uiVars is a map of UI variable names stored in state to the parent
-          // context which controls them.
-          uiVars: object,
-
-          // Actions to pass to children
-          updateUI: func,
-          resetUI: func
-        }
-
-        // Get the existing context from a UI parent, if possible
-        static contextTypes = {
-          // This is used in mergeUIProps and construct() to immediately set
-          // props.
-          store: any,
-
-          uiKey: string,
-          uiPath: array,
-          uiVars: object,
-
-          updateUI: func,
-          resetUI: func
-        }
-
         componentWillMount() {
           // If the component's UI subtree doesn't exist and we have state to
           // set ensure we update our global store with the current state.
           if (this.props.ui.getIn(this.uiPath) === undefined && opts.state) {
             const state = this.getDefaultUIState(opts.state);
-            this.context.store.dispatch(mountUI(this.uiPath, state, opts.reducer));
+            this.props.mountUI(this.uiPath, state, opts.reducer);
           }
         }
 
@@ -134,7 +108,7 @@ export default function ui(key, opts = {}) {
           // We can only see if this component's state is blown away by
           // accessing the current global UI state; the parent will not
           // necessarily always pass down child state.
-          const ui = getUIState(this.context.store.getState());
+          const ui = getUIState(this.props.globalState);
           if (ui.getIn(this.uiPath) === undefined && opts.state) {
             const state = this.getDefaultUIState(opts.state, nextProps);
             this.props.setDefaultUI(this.uiPath, state);
@@ -146,7 +120,7 @@ export default function ui(key, opts = {}) {
         // This is also used within componentWilLReceiveProps and so props
         // also needs to be passed in
         getDefaultUIState(uiState, props = this.props) {
-          const globalState = this.context.store.getState();
+          const globalState = this.props.globalState;
           let state = { ...uiState };
           Object.keys(state).forEach(k => {
             if (typeof(state[k]) === 'function') {
@@ -200,7 +174,7 @@ export default function ui(key, opts = {}) {
         //
         // Pass the uiKey and partially applied updateUI function to all
         // child components that are wrapped in a plain `@ui()` decorator
-        getChildContext() {
+        getConsumerValues() {
           let [uiVars, uiPath] = this.getMergedContextVars();
 
           return {
@@ -278,7 +252,7 @@ export default function ui(key, opts = {}) {
           //
           // We still use @connect() to connect to the store and listen for
           // changes in other cases.
-          const ui = getUIState(this.context.store.getState());
+          const ui = getUIState(this.props.globalState);
 
           return Object.keys(this.uiVars).reduce((props, k) => {
             props[k] = ui.getIn(this.uiVars[k].concat(k));
@@ -288,13 +262,16 @@ export default function ui(key, opts = {}) {
 
         render() {
           return (
-            <WrappedComponent
-              { ...this.props }
-              uiKey={ this.key }
-              uiPath={ this.uiPath }
-              ui={ this.mergeUIProps() }
-              resetUI={ ::this.resetUI }
-              updateUI={ ::this.updateUI } />
+            <UIContext.Provider value={ ::this.getConsumerValues() }>
+              <WrappedComponent
+                { ...this.props }
+                uiKey={ this.key }
+                uiPath={ this.uiPath }
+                ui={ this.mergeUIProps() }
+                resetUI={ ::this.resetUI }
+                updateUI={ ::this.updateUI }
+              />
+            </UIContext.Provider>
           );
         }
       }
